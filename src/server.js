@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import app from './app.js';
 import sequelize from './config/db.js';
 import { seedDatabase } from './config/seed.js';
+import { connectKafka } from './config/kafka.js';
 
 dotenv.config();
 
@@ -43,6 +44,9 @@ const startServer = async () => {
 
     // Seed defaults if database tables are empty
     await seedDatabase();
+
+    // Connect to Kafka
+    await connectKafka();
 
     // Start Express listener
     app.listen(PORT, () => {
