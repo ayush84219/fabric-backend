@@ -20,73 +20,27 @@ export async function seedDatabase() {
     ];
     await Room.bulkCreate(roomsData, { ignoreDuplicates: true });
 
-    // 2. Seed Racks
+    // 2. Seed Racks (Zones)
     const racksData = [];
-    // Regular racks for Hall 1 (A) and Hall 2 (B)
-    ['A', 'B'].forEach(room => {
-      for (let i = 1; i <= 12; i++) {
-        const rackId = `${room}${String(i).padStart(2, '0')}`;
-        racksData.push({ id: rackId, room, number: i, name: `Rack ${rackId}` });
-      }
+    ['A', 'B', 'C'].forEach(room => {
+      ['A', 'B', 'C', 'D'].forEach((zone, idx) => {
+        racksData.push({
+          id: `${room}-${zone}`,
+          room,
+          number: idx + 1,
+          name: `Zone ${zone}`
+        });
+      });
     });
-
-    // Zoned racks for Hall 3 (C)
-    // Zone A: R1-R9
-    for (let i = 1; i <= 9; i++) {
-      racksData.push({ id: `C-A-R${i}`, room: 'C', number: i, name: `Zone A Rack ${i}` });
-    }
-    // Zone B: R1-R15
-    for (let i = 1; i <= 15; i++) {
-      racksData.push({ id: `C-B-R${i}`, room: 'C', number: i, name: `Zone B Rack ${i}` });
-    }
-    // Zone C: R1-R9
-    for (let i = 1; i <= 9; i++) {
-      racksData.push({ id: `C-C-R${i}`, room: 'C', number: i, name: `Zone C Rack ${i}` });
-    }
-    // Zone D: R1-R9
-    for (let i = 1; i <= 9; i++) {
-      racksData.push({ id: `C-D-R${i}`, room: 'C', number: i, name: `Zone D Rack ${i}` });
-    }
     await Rack.bulkCreate(racksData, { ignoreDuplicates: true });
 
-    // 3. Seed Shelves
+    // 3. Seed Shelves (Racks)
     const shelvesData = [];
-    const usedData = {
-      'A01-S01': 500, 'A01-S02': 320, 'A01-S03': 150, 'A01-S04': 0, 'A01-S05': 80,
-      'A02-S01': 250, 'A02-S02': 0, 'A02-S03': 380, 'A02-S04': 120, 'A02-S05': 500,
-      'A03-S01': 500, 'A03-S02': 320, 'A03-S03': 150, 'A03-S04': 0, 'A03-S05': 80,
-      'A04-S01': 0, 'A04-S02': 0, 'A04-S03': 100, 'A04-S04': 200, 'A04-S05': 0,
-      'A05-S01': 300, 'A05-S02': 450, 'A05-S03': 0, 'A05-S04': 150, 'A05-S05': 500,
-      'B01-S01': 500, 'B01-S02': 500, 'B01-S03': 380, 'B01-S04': 250, 'B01-S05': 100,
-      'B06-S01': 0, 'B06-S02': 150, 'B06-S03': 0, 'B06-S04': 300, 'B06-S05': 0,
-    };
-
-    // Seed regular shelves
-    ['A', 'B'].forEach(room => {
-      for (let i = 1; i <= 12; i++) {
-        const rackId = `${room}${String(i).padStart(2, '0')}`;
-        for (let s = 1; s <= 5; s++) {
-          const shelfId = `${rackId}-S${String(s).padStart(2, '0')}`;
-          const used = usedData[shelfId] !== undefined ? usedData[shelfId] : Math.floor(Math.random() * 100);
-          shelvesData.push({
-            id: shelfId,
-            rack: rackId,
-            room,
-            number: s,
-            name: `Shelf S${String(s).padStart(2, '0')}`,
-            capacity: 500,
-            used
-          });
-        }
-      }
-    });
-
-    // Seed zoned shelves for Hall 3 (C) with visual color distribution
-    const cRacks = racksData.filter(r => r.room === 'C');
-    cRacks.forEach(r => {
-      const rackId = r.id;
-      for (let s = 1; s <= 5; s++) {
-        const shelfId = `${rackId}-S${String(s).padStart(2, '0')}`;
+    racksData.forEach(r => {
+      const isZoneB = r.id.endsWith('-B');
+      const count = isZoneB ? 15 : 9;
+      for (let i = 1; i <= count; i++) {
+        const shelfId = `${r.id}-R${i}`;
         let used = 0;
         const rand = Math.random();
         if (rand < 0.35) {
@@ -96,12 +50,13 @@ export async function seedDatabase() {
         } else {
           used = 450 + Math.floor(Math.random() * 50); // Reserved/Full (Yellow)
         }
+
         shelvesData.push({
           id: shelfId,
-          rack: rackId,
-          room: 'C',
-          number: s,
-          name: `Shelf S${String(s).padStart(2, '0')}`,
+          rack: r.id,
+          room: r.room,
+          number: i,
+          name: `Rack R${i}`,
           capacity: 500,
           used
         });
@@ -111,11 +66,13 @@ export async function seedDatabase() {
 
     // 4. Seed Users
     const hashedPassword = await bcrypt.hash('password123', 10);
+    const hashedAyushPassword = await bcrypt.hash('Ayush123', 10);
     const usersData = [
       { id: 1, name: 'Admin User', email: 'admin@textile.com', password: hashedPassword, role: 'Admin', department: 'Management', status: 'Active', avatar: 'AU', lastLogin: '2025-05-20 09:15', isVerified: true },
       { id: 2, name: 'Sara Ahmed', email: 'sara@textile.com', password: hashedPassword, role: 'Store Manager', department: 'Warehouse', status: 'Active', avatar: 'SA', lastLogin: '2025-05-20 08:30', isVerified: true },
       { id: 3, name: 'Ali Hassan', email: 'ali@textile.com', password: hashedPassword, role: 'Store Operator', department: 'Warehouse', status: 'Active', avatar: 'AH', lastLogin: '2025-05-19 17:00', isVerified: true },
       { id: 4, name: 'Fatima Khan', email: 'fatima@textile.com', password: hashedPassword, role: 'Store Operator', department: 'Production', status: 'Inactive', avatar: 'FK', lastLogin: '2025-05-10 11:00', isVerified: true },
+      { id: 5, name: 'Ayush', email: 'ay104061@gmail.com', password: hashedAyushPassword, role: 'Admin', department: 'Management', status: 'Active', avatar: 'AY', lastLogin: '2025-05-20 09:15', isVerified: true },
     ];
     await User.bulkCreate(usersData, { ignoreDuplicates: true });
 
@@ -130,12 +87,12 @@ export async function seedDatabase() {
 
     // 6. Seed Materials
     const materialsData = [
-      { id: 1, code: 'MAT00001', name: 'Cotton Fabric', category: 'Summer Fabric', subCategory: 'Plain Cotton', color: 'White', supplier: 1, weight: 250.00, rolls: 10, unit: 'Roll', location: 'A03-S02', status: 'Active', stockKg: 250.00, billNumber: 'INV-8845', receivedPerson: 'Ali Hassan', authorizedPerson: 'Sara Ahmed', receivedDate: '2025-05-20' },
-      { id: 2, code: 'MAT00002', name: 'Polyester Fabric', category: 'Summer Fabric', subCategory: 'Woven', color: 'Blue', supplier: 2, weight: 150.00, rolls: 6, unit: 'Roll', location: 'A05-S01', status: 'Active', stockKg: 150.00, billNumber: 'INV-7654', receivedPerson: 'Ali Hassan', authorizedPerson: 'Paras Goyal', receivedDate: '2025-05-20' },
-      { id: 3, code: 'MAT00003', name: 'Rib Fabric', category: 'Winter Fabric', subCategory: 'Rib Knit', color: 'Grey', supplier: 1, weight: 100.00, rolls: 4, unit: 'Roll', location: 'B02-S03', status: 'Active', stockKg: 100.00, billNumber: 'INV-8846', receivedPerson: 'Sara Ahmed', authorizedPerson: 'Paras Goyal', receivedDate: '2025-05-20' },
-      { id: 4, code: 'MAT00004', name: 'Lining Fabric', category: 'Summer Fabric', subCategory: 'Viscose Lining', color: 'Black', supplier: 2, weight: 80.00, rolls: 8, unit: 'Roll', location: 'A01-S03', status: 'Low Stock', stockKg: 80.00, billNumber: 'INV-9921', receivedPerson: 'John Doe', authorizedPerson: 'Sarah Smith', receivedDate: '2025-05-19' },
-      { id: 5, code: 'MAT00005', name: 'Buttons Pack', category: 'Accessories', subCategory: 'Plastic Buttons', color: 'Mixed', supplier: 3, weight: 5.00, rolls: 100, unit: 'Pcs', location: 'C-C-R1-S01', status: 'Active', stockKg: 5.00, billNumber: 'INV-1102', receivedPerson: 'John Doe', authorizedPerson: 'Sarah Smith', receivedDate: '2025-05-18' },
-      { id: 6, code: 'MAT00006', name: 'Denim Fabric', category: 'Winter Fabric', subCategory: 'Heavy Denim', color: 'Indigo', supplier: 4, weight: 320.00, rolls: 12, unit: 'Roll', location: 'B04-S02', status: 'Active', stockKg: 320.00, billNumber: 'INV-2045', receivedPerson: 'Ali Hassan', authorizedPerson: 'Sara Ahmed', receivedDate: '2025-05-15' },
+      { id: 1, code: 'MAT00001', name: 'Cotton Fabric', category: 'Summer Fabric', subCategory: 'Plain Cotton', color: 'White', supplier: 1, weight: 250.00, rolls: 10, unit: 'Roll', location: 'A-A-R1', status: 'Active', stockKg: 250.00, billNumber: 'INV-8845', receivedPerson: 'Ali Hassan', authorizedPerson: 'Sara Ahmed', receivedDate: '2025-05-20' },
+      { id: 2, code: 'MAT00002', name: 'Polyester Fabric', category: 'Summer Fabric', subCategory: 'Woven', color: 'Blue', supplier: 2, weight: 150.00, rolls: 6, unit: 'Roll', location: 'A-B-R2', status: 'Active', stockKg: 150.00, billNumber: 'INV-7654', receivedPerson: 'Ali Hassan', authorizedPerson: 'Paras Goyal', receivedDate: '2025-05-20' },
+      { id: 3, code: 'MAT00003', name: 'Rib Fabric', category: 'Winter Fabric', subCategory: 'Rib Knit', color: 'Grey', supplier: 1, weight: 100.00, rolls: 4, unit: 'Roll', location: 'B-A-R1', status: 'Active', stockKg: 100.00, billNumber: 'INV-8846', receivedPerson: 'Sara Ahmed', authorizedPerson: 'Paras Goyal', receivedDate: '2025-05-20' },
+      { id: 4, code: 'MAT00004', name: 'Lining Fabric', category: 'Summer Fabric', subCategory: 'Viscose Lining', color: 'Black', supplier: 2, weight: 80.00, rolls: 8, unit: 'Roll', location: 'A-A-R2', status: 'Low Stock', stockKg: 80.00, billNumber: 'INV-9921', receivedPerson: 'John Doe', authorizedPerson: 'Sarah Smith', receivedDate: '2025-05-19' },
+      { id: 5, code: 'MAT00005', name: 'Buttons Pack', category: 'Accessories', subCategory: 'Plastic Buttons', color: 'Mixed', supplier: 3, weight: 5.00, rolls: 100, unit: 'Pcs', location: 'C-C-R1', status: 'Active', stockKg: 5.00, billNumber: 'INV-1102', receivedPerson: 'John Doe', authorizedPerson: 'Sarah Smith', receivedDate: '2025-05-18' },
+      { id: 6, code: 'MAT00006', name: 'Denim Fabric', category: 'Winter Fabric', subCategory: 'Heavy Denim', color: 'Indigo', supplier: 4, weight: 320.00, rolls: 12, unit: 'Roll', location: 'B-B-R1', status: 'Active', stockKg: 320.00, billNumber: 'INV-2045', receivedPerson: 'Ali Hassan', authorizedPerson: 'Sara Ahmed', receivedDate: '2025-05-15' },
     ];
     await Material.bulkCreate(materialsData, { ignoreDuplicates: true });
 
@@ -156,7 +113,7 @@ export async function seedDatabase() {
 
     // 9. Seed Transfers
     const transferData = [
-      { id: 1, transferNo: 'TRF-2025-001', materialId: 1, fromLocation: 'A01-S01', toLocation: 'A03-S02', rolls: 10, reason: 'Reorganization', date: '2025-05-18', transferredBy: 'Sara Ahmed', status: 'Completed' },
+      { id: 1, transferNo: 'TRF-2025-001', materialId: 1, fromLocation: 'A-A-R3', toLocation: 'A-A-R1', rolls: 10, reason: 'Reorganization', date: '2025-05-18', transferredBy: 'Sara Ahmed', status: 'Completed' },
     ];
     await Transfer.bulkCreate(transferData, { ignoreDuplicates: true });
 

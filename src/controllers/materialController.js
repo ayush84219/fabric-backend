@@ -19,10 +19,10 @@ export const findAvailableLocation = async (category) => {
   try {
     const rooms = await Room.findAll();
     const room = rooms.find(r => r.category === category) || rooms[0];
-    if (!room) return 'A01-S01';
+    if (!room) return 'A-A-R1';
 
     const shelves = await Shelf.findAll({ where: { room: room.id } });
-    if (shelves.length === 0) return `${room.id}01-S01`;
+    if (shelves.length === 0) return `${room.id}-A-R1`;
 
     // Sum rolls currently in each shelf to check usage (from both tables)
     const materialsInRoom = await Material.findAll({
@@ -47,7 +47,7 @@ export const findAvailableLocation = async (category) => {
 
     return available ? available.id : shelves[0].id;
   } catch (e) {
-    return 'A01-S01';
+    return 'A-A-R1';
   }
 };
 

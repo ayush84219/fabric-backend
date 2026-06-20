@@ -474,16 +474,24 @@ export const getDyeingDiscrepancyReport = async (req, res) => {
         );
       }
 
-      // Match 4: Exact bill number (case-insensitive)
-      if (!matchedData && billNo) {
+      // Match 4: Exact bill number (case-insensitive) - only when lot is not specified
+      if (!matchedData && billNo && (!lot || lot === '—')) {
         matchedData = sheetRows.find(row =>
           row.billNumber.toLowerCase() === billNo.toLowerCase()
         );
       }
 
       // Local fallbacks if still not matched from sheets
-      const iss = issuanceMap.get(lot.toLowerCase()) || (billNo ? issuanceMap.get(billNo.toLowerCase()) : null);
-      const jo = jobOrderMap.get(lot.toLowerCase()) || (billNo ? jobOrderMap.get(billNo.toLowerCase()) : null);
+      const lotLower = lot ? String(lot).trim().toLowerCase() : '';
+      const billLower = billNo ? String(billNo).trim().toLowerCase() : '';
+
+      const iss = (lotLower && lotLower !== '—')
+        ? issuanceMap.get(lotLower)
+        : (billLower && billLower !== '—' ? issuanceMap.get(billLower) : null);
+
+      const jo = (lotLower && lotLower !== '—')
+        ? jobOrderMap.get(lotLower)
+        : (billLower && billLower !== '—' ? jobOrderMap.get(billLower) : null);
 
       // Sent Values
       const sentRolls = matchedData ? matchedData.sentRolls : (iss ? parseInt(iss.totalQuantity) : (jo ? parseInt(jo.quantity) : 0));
