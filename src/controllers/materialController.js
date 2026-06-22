@@ -1,5 +1,6 @@
 import { Material, Room, Shelf, AuditLog, DyeingMaterial, sequelize } from '../models/index.js';
 import { Op } from 'sequelize';
+import { cache } from '../utils/cache.js';
 
 // Audit Log Helper
 export async function addAuditLog(action, detail, user = 'Admin User', type = 'info') {
@@ -53,7 +54,7 @@ export const findAvailableLocation = async (category) => {
 
 export const getMaterials = async (req, res) => {
   try {
-    const { search, category, status } = req.query;
+    const { search, category, status, location } = req.query;
     const where = {};
 
     if (search) {
@@ -68,6 +69,9 @@ export const getMaterials = async (req, res) => {
     }
     if (status && status !== 'All') {
       where.status = status;
+    }
+    if (location) {
+      where.location = location;
     }
 
     const materials = await Material.findAll({
@@ -148,6 +152,8 @@ export const addMaterial = async (req, res) => {
       location
     });
 
+    cache.delete('settings_data');
+
     await addAuditLog('New Material Created', `${material.code}: ${material.name} added`, 'Admin User', 'create');
     res.json(material);
   } catch (error) {
@@ -166,6 +172,7 @@ export const updateMaterial = async (req, res) => {
     await checkShelfCapacity(targetLocation, targetRolls, material.id);
 
     await material.update(req.body);
+    cache.delete('settings_data');
     res.json(material);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -179,6 +186,7 @@ export const deleteMaterial = async (req, res) => {
     if (!material) return res.status(404).json({ error: 'Material not found' });
     
     await material.destroy();
+    cache.delete('settings_data');
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });

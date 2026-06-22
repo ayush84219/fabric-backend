@@ -1,6 +1,7 @@
 import { FabricIssuance, DyeingMaterial, Material, Issue, JobOrder, sequelize } from '../models/index.js';
 import { addAuditLog } from './materialController.js';
 import { getSheetDataCsvText, parseCsvTextIntoRows } from './sheetsController.js';
+import { cache } from '../utils/cache.js';
 
 // 1. GET ALL ISSUED BARCODES
 export const allIssuedBarcodes = async (req, res) => {
@@ -100,44 +101,43 @@ export const storeFabricIssuance = async (req, res) => {
       }, { transaction });
     }
 
-    // Update statuses of rolls in DyeingMaterial and Material to 'issued' and create Issue records
+    // ✅ Batch-fetch all materials by barcode in ONE query (eliminates N+1)
     if (Array.isArray(barcodeIds) && barcodeIds.length > 0) {
       await DyeingMaterial.update(
         { status: 'issued' },
-        {
-          where: { barcodeId: barcodeIds },
-          transaction
-        }
+        { where: { barcodeId: barcodeIds }, transaction }
       );
 
-      // Decrement inventory rolls and create entries in the main Issue table
-      for (const barcode of barcodeIds) {
-        const material = await Material.findOne({
-          where: { code: barcode },
-          transaction
-        });
+      const materials = await Material.findAll({
+        where: { code: barcodeIds },
+        transaction
+      });
 
-        if (material) {
-          await material.update({
-            status: 'issued',
-            rolls: Math.max(0, material.rolls - 1),
-            stockKg: Math.max(0.00, parseFloat(material.stockKg) - (parseFloat(material.weight) || 0.00))
-          }, { transaction });
+      // ✅ Single COUNT before the loop, increment locally
+      let issueCount = await Issue.count({ transaction });
+      const year = new Date().getFullYear();
+      const issuedDate = issuedAt ? issuedAt.split('T')[0] : new Date().toISOString().split('T')[0];
 
-          const issueCount = await Issue.count({ transaction });
-          const issueNo = `ISS-${new Date().getFullYear()}-${String(issueCount + 1).padStart(3, '0')}`;
+      for (const material of materials) {
+        await material.update({
+          status: 'issued',
+          rolls: Math.max(0, material.rolls - 1),
+          stockKg: Math.max(0.00, parseFloat(material.stockKg) - (parseFloat(material.weight) || 0.00))
+        }, { transaction });
 
-          await Issue.create({
-            issueNo,
-            materialId: material.id,
-            rolls: 1,
-            department: department || 'Production',
-            issuedBy: issuedBy || 'System',
-            date: issuedAt ? issuedAt.split('T')[0] : new Date().toISOString().split('T')[0],
-            reason: remarks || 'Issued via Barcode Scanner',
-            status: 'Completed'
-          }, { transaction });
-        }
+        issueCount += 1;
+        const issueNo = `ISS-${year}-${String(issueCount).padStart(3, '0')}`;
+
+        await Issue.create({
+          issueNo,
+          materialId: material.id,
+          rolls: 1,
+          department: department || 'Production',
+          issuedBy: issuedBy || 'System',
+          date: issuedDate,
+          reason: remarks || 'Issued via Barcode Scanner',
+          status: 'Completed'
+        }, { transaction });
       }
     }
 
@@ -150,6 +150,7 @@ export const storeFabricIssuance = async (req, res) => {
     );
 
     await transaction.commit();
+    cache.delete('settings_data');
 
     res.json({
       success: true,
@@ -286,42 +287,42 @@ export const syncOfflineData = async (req, res) => {
         }, { transaction });
       }
 
+      // ✅ Batch-fetch all materials by barcode (eliminates N+1)
       if (Array.isArray(barcodeIds) && barcodeIds.length > 0) {
         await DyeingMaterial.update(
           { status: 'issued' },
-          {
-            where: { barcodeId: barcodeIds },
-            transaction
-          }
+          { where: { barcodeId: barcodeIds }, transaction }
         );
 
-        for (const barcode of barcodeIds) {
-          const material = await Material.findOne({
-            where: { code: barcode },
-            transaction
-          });
+        const batchMaterials = await Material.findAll({
+          where: { code: barcodeIds },
+          transaction
+        });
 
-          if (material) {
-            await material.update({
-              status: 'issued',
-              rolls: Math.max(0, material.rolls - 1),
-              stockKg: Math.max(0.00, parseFloat(material.stockKg) - (parseFloat(material.weight) || 0.00))
-            }, { transaction });
+        let issueCount = await Issue.count({ transaction });
+        const year = new Date().getFullYear();
+        const issuedDate = issuedAt ? issuedAt.split('T')[0] : new Date().toISOString().split('T')[0];
 
-            const issueCount = await Issue.count({ transaction });
-            const issueNo = `ISS-${new Date().getFullYear()}-${String(issueCount + 1).padStart(3, '0')}`;
+        for (const material of batchMaterials) {
+          await material.update({
+            status: 'issued',
+            rolls: Math.max(0, material.rolls - 1),
+            stockKg: Math.max(0.00, parseFloat(material.stockKg) - (parseFloat(material.weight) || 0.00))
+          }, { transaction });
 
-            await Issue.create({
-              issueNo,
-              materialId: material.id,
-              rolls: 1,
-              department: department || 'Production',
-              issuedBy: issuedBy || 'System',
-              date: issuedAt ? issuedAt.split('T')[0] : new Date().toISOString().split('T')[0],
-              reason: remarks || 'Issued via Barcode Scanner',
-              status: 'Completed'
-            }, { transaction });
-          }
+          issueCount += 1;
+          const issueNo = `ISS-${year}-${String(issueCount).padStart(3, '0')}`;
+
+          await Issue.create({
+            issueNo,
+            materialId: material.id,
+            rolls: 1,
+            department: department || 'Production',
+            issuedBy: issuedBy || 'System',
+            date: issuedDate,
+            reason: remarks || 'Issued via Barcode Scanner',
+            status: 'Completed'
+          }, { transaction });
         }
       }
 
@@ -334,6 +335,7 @@ export const syncOfflineData = async (req, res) => {
     }
 
     await transaction.commit();
+    cache.delete('settings_data');
     res.json({ success: true });
   } catch (error) {
     await transaction.rollback();

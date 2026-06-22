@@ -1,5 +1,6 @@
 import { Grn, Material } from '../models/index.js';
 import { findAvailableLocation, addAuditLog, checkShelfCapacity, getNextBarcodeId } from './materialController.js';
+import { cache } from '../utils/cache.js';
 
 export const getGRNs = async (req, res) => {
   try {
@@ -58,6 +59,8 @@ export const addGRN = async (req, res) => {
     });
 
     await addAuditLog('Material Received', `${grnNo}: ${rollsVal} Roll(s) received`, 'Admin User', 'receive');
+
+    cache.delete('settings_data');
 
     res.json({ ...grnItem.toJSON(), material, location });
   } catch (error) {

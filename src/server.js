@@ -54,8 +54,8 @@ const startServer = async () => {
     // Seed defaults if database tables are empty
     await seedDatabase();
 
-    // Connect to Kafka
-    await connectKafka();
+    // Connect to Kafka (runs in background to avoid blocking server startup if Kafka is offline/unreachable)
+    connectKafka();
 
     // Start Express listener
     app.listen(PORT, () => {

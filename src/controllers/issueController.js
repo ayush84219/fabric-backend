@@ -1,5 +1,6 @@
 import { Issue, Material, sequelize } from '../models/index.js';
 import { addAuditLog } from './materialController.js';
+import { cache } from '../utils/cache.js';
 
 export const getIssues = async (req, res) => {
   try {
@@ -48,6 +49,7 @@ export const addIssue = async (req, res) => {
     await addAuditLog('Material Issued', `${issueNo}: ${rollsVal} Roll(s) issued to ${department}`, 'Admin User', 'issue');
 
     await transaction.commit();
+    cache.delete('settings_data');
     res.json(newIssue);
   } catch (error) {
     await transaction.rollback();

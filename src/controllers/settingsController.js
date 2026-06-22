@@ -1,25 +1,51 @@
-import { Room, Rack, Shelf, Supplier, AuditLog, Material, DyeingMaterial } from '../models/index.js';
+import { Room, Rack, Shelf, Supplier, AuditLog, Material, DyeingMaterial, sequelize } from '../models/index.js';
 import { addAuditLog } from './materialController.js';
+import { Op } from 'sequelize';
+import { cache } from '../utils/cache.js';
 
 export const getSettingsData = async (req, res) => {
   try {
-    const rooms = await Room.findAll();
-    const racks = await Rack.findAll();
-    const shelves = await Shelf.findAll();
-    const materials = await Material.findAll();
-    const dyeingMaterials = await DyeingMaterial.findAll();
-    
-    // Sum rolls per shelf location dynamically
+    const cachedData = cache.get('settings_data');
+    if (cachedData) {
+      return res.json(cachedData);
+    }
+
+    const [rooms, racks, shelves, materialUsage, dyeingUsage, suppliers, auditLog] = await Promise.all([
+      Room.findAll(),
+      Rack.findAll(),
+      Shelf.findAll(),
+      Material.findAll({
+        attributes: [
+          'location',
+          [sequelize.fn('SUM', sequelize.col('rolls')), 'used']
+        ],
+        where: {
+          location: { [Op.ne]: null }
+        },
+        group: ['location'],
+        raw: true
+      }),
+      DyeingMaterial.findAll({
+        attributes: [
+          'location',
+          [sequelize.fn('COUNT', sequelize.col('id')), 'used']
+        ],
+        where: {
+          location: { [Op.ne]: null }
+        },
+        group: ['location'],
+        raw: true
+      }),
+      Supplier.findAll(),
+      AuditLog.findAll({ order: [['id', 'DESC']], limit: 200 })
+    ]);
+
     const shelfUsedMap = {};
-    materials.forEach(m => {
-      if (m.location) {
-        shelfUsedMap[m.location] = (shelfUsedMap[m.location] || 0) + (m.rolls || 0);
-      }
+    materialUsage.forEach(row => {
+      if (row.location) shelfUsedMap[row.location] = (shelfUsedMap[row.location] || 0) + Number(row.used || 0);
     });
-    dyeingMaterials.forEach(dm => {
-      if (dm.location) {
-        shelfUsedMap[dm.location] = (shelfUsedMap[dm.location] || 0) + (dm.rolls || 1);
-      }
+    dyeingUsage.forEach(row => {
+      if (row.location) shelfUsedMap[row.location] = (shelfUsedMap[row.location] || 0) + Number(row.used || 0);
     });
 
     const enrichedShelves = shelves.map(s => {
@@ -28,20 +54,20 @@ export const getSettingsData = async (req, res) => {
       return data;
     });
 
-    const suppliers = await Supplier.findAll();
-    const auditLog = await AuditLog.findAll({ order: [['id', 'DESC']], limit: 200 });
-    
     // Extract unique floor list from Rooms
     const floors = [...new Set(rooms.map(r => r.floor).filter(Boolean))];
 
-    res.json({
+    const result = {
       rooms,
       racks,
       shelves: enrichedShelves,
       suppliers,
       auditLog,
       floors
-    });
+    };
+
+    cache.set('settings_data', result, 24 * 60 * 60 * 1000); // 24 hours TTL, cache is invalidated on mutations
+    res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -51,6 +77,7 @@ export const getSettingsData = async (req, res) => {
 export const addRoom = async (req, res) => {
   try {
     const room = await Room.create(req.body);
+    cache.delete('settings_data');
     await addAuditLog('Room Added', `Room ${room.name} (${room.id}) added`, 'Admin User', 'create');
     res.json(room);
   } catch (error) {
@@ -65,6 +92,7 @@ export const updateRoom = async (req, res) => {
     if (!room) return res.status(404).json({ error: 'Room not found' });
     
     await room.update(req.body);
+    cache.delete('settings_data');
     await addAuditLog('Room Updated', `Room ${id} details updated`, 'Admin User', 'create');
     res.json(room);
   } catch (error) {
@@ -83,6 +111,7 @@ export const deleteRoom = async (req, res) => {
     if (!room) return res.status(404).json({ error: 'Room not found' });
     
     await room.destroy();
+    cache.delete('settings_data');
     await addAuditLog('Room Removed', `Room ${id} deleted`, 'Admin User', 'delete');
     res.json({ success: true });
   } catch (error) {
@@ -94,6 +123,7 @@ export const deleteRoom = async (req, res) => {
 export const addRack = async (req, res) => {
   try {
     const rack = await Rack.create(req.body);
+    cache.delete('settings_data');
     await addAuditLog('Rack Added', `Rack ${rack.name} added to Room ${rack.room}`, 'Admin User', 'create');
     res.json(rack);
   } catch (error) {
@@ -104,10 +134,12 @@ export const addRack = async (req, res) => {
 export const deleteRack = async (req, res) => {
   try {
     const { id } = req.params;
-    const materials = await Material.findAll();
-    const dyeing = await DyeingMaterial.findAll();
-    const hasMaterials = materials.some(m => m.location && m.location.startsWith(id));
-    const hasDyeing = dyeing.some(dm => dm.location && dm.location.startsWith(id));
+    const hasMaterials = await Material.findOne({
+      where: { location: { [Op.like]: `${id}%` } }
+    });
+    const hasDyeing = await DyeingMaterial.findOne({
+      where: { location: { [Op.like]: `${id}%` } }
+    });
     if (hasMaterials || hasDyeing) {
       return res.status(400).json({ error: `Cannot delete Rack ${id}: materials are stored in shelves on this rack.` });
     }
@@ -115,6 +147,8 @@ export const deleteRack = async (req, res) => {
     await Shelf.destroy({ where: { rack: id } });
     const rack = await Rack.findByPk(id);
     if (rack) await rack.destroy();
+    
+    cache.delete('settings_data');
 
     await addAuditLog('Rack Removed', `Rack ${id} and its shelves were deleted`, 'Admin User', 'delete');
     res.json({ success: true });
@@ -127,6 +161,7 @@ export const deleteRack = async (req, res) => {
 export const addShelf = async (req, res) => {
   try {
     const shelf = await Shelf.create(req.body);
+    cache.delete('settings_data');
     await addAuditLog('Shelf Added', `Shelf ${shelf.id} added to Rack ${shelf.rack}`, 'Admin User', 'create');
     res.json(shelf);
   } catch (error) {
@@ -145,6 +180,7 @@ export const deleteShelf = async (req, res) => {
     const shelf = await Shelf.findByPk(id);
     if (shelf) await shelf.destroy();
     
+    cache.delete('settings_data');
     await addAuditLog('Shelf Removed', `Shelf ${id} was deleted`, 'Admin User', 'delete');
     res.json({ success: true });
   } catch (error) {
@@ -156,6 +192,7 @@ export const deleteShelf = async (req, res) => {
 export const addSupplier = async (req, res) => {
   try {
     const sup = await Supplier.create(req.body);
+    cache.delete('settings_data');
     res.json(sup);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -169,6 +206,7 @@ export const updateSupplier = async (req, res) => {
     if (!sup) return res.status(404).json({ error: 'Supplier not found' });
     
     await sup.update(req.body);
+    cache.delete('settings_data');
     res.json(sup);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -180,6 +218,7 @@ export const deleteSupplier = async (req, res) => {
     const { id } = req.params;
     const sup = await Supplier.findByPk(id);
     if (sup) await sup.destroy();
+    cache.delete('settings_data');
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });

@@ -4,6 +4,7 @@ import { Op } from 'sequelize';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { cache } from '../utils/cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -377,40 +378,26 @@ export const fetchDyeingLotDetails = async (req, res) => {
   }
 };
 
-// In-memory cache for Google Sheet CSV data
-let cachedCsvText = null;
-let cacheTimestamp = 0;
-let cachedJobOrdersCsvText = null;
-let jobOrdersCacheTimestamp = 0;
-const CACHE_TTL_MS = 15000; // 15 seconds TTL
+// In-memory cache key definitions
+const SHEET_DATA_CACHE_TTL = 5 * 60 * 1000; // 5 minutes fresh TTL
 
 export const getSheetDataCsvText = async () => {
-  const now = Date.now();
-  if (cachedCsvText && (now - cacheTimestamp < CACHE_TTL_MS)) {
-    return cachedCsvText;
-  }
-
-  try {
+  return cache.swr('sheet_data_csv', SHEET_DATA_CACHE_TTL, async () => {
     console.log('[Sheets API] Fetching fresh CSV from Google Sheets...');
     const response = await fetch('https://docs.google.com/spreadsheets/d/1xvafKcozZqf9yeWoLil4Eaws9A0j7WDz1zpxItKfr1c/export?format=csv');
     if (!response.ok) {
       throw new Error(`Failed to fetch from Google Sheets: ${response.status}`);
     }
     const csvText = await response.text();
-    cachedCsvText = csvText;
-    cacheTimestamp = now;
     // Save to disk cache asynchronously
     fs.promises.writeFile(SHEET_DATA_CACHE_PATH, csvText, 'utf8').catch(err => {
       console.error('[Sheets API] Error saving Sheet Data to disk cache:', err);
     });
     return csvText;
-  } catch (fetchErr) {
-    console.warn('[Sheets API] Offline/Network error fetching Sheet Data. Falling back to cache...', fetchErr.message);
+  }).catch(async (err) => {
+    console.warn('[Sheets API] Offline/Network error fetching Sheet Data. Falling back to cache...', err.message);
     if (fs.existsSync(SHEET_DATA_CACHE_PATH)) {
-      const csvText = fs.readFileSync(SHEET_DATA_CACHE_PATH, 'utf8');
-      cachedCsvText = csvText;
-      cacheTimestamp = now;
-      return csvText;
+      return fs.readFileSync(SHEET_DATA_CACHE_PATH, 'utf8');
     } else {
       console.log('[Sheets API] No disk cache found for Sheet Data. Seeding mock data.');
       const seedData = getDefaultSheetDataCsv();
@@ -419,40 +406,28 @@ export const getSheetDataCsvText = async () => {
       } catch (writeErr) {
         console.error('[Sheets API] Failed to seed mock Sheet Data CSV:', writeErr);
       }
-      cachedCsvText = seedData;
-      cacheTimestamp = now;
       return seedData;
     }
-  }
+  });
 };
 
 const getJobOrdersCsvText = async () => {
-  const now = Date.now();
-  if (cachedJobOrdersCsvText && (now - jobOrdersCacheTimestamp < CACHE_TTL_MS)) {
-    return cachedJobOrdersCsvText;
-  }
-
-  try {
+  return cache.swr('job_orders_csv', SHEET_DATA_CACHE_TTL, async () => {
     console.log('[Sheets API] Fetching fresh Job Orders CSV from Google Sheets...');
     const response = await fetch('https://docs.google.com/spreadsheets/d/13ArpFOD7idmpv7QIRJQkD-tfswtkH6rNnEANtv2M7Ek/export?format=csv&gid=0');
     if (!response.ok) {
       throw new Error(`Failed to fetch Job Orders from Google Sheets: ${response.status}`);
     }
     const csvText = await response.text();
-    cachedJobOrdersCsvText = csvText;
-    jobOrdersCacheTimestamp = now;
     // Save to disk cache asynchronously
     fs.promises.writeFile(JOB_ORDERS_CACHE_PATH, csvText, 'utf8').catch(err => {
       console.error('[Sheets API] Error saving Job Orders to disk cache:', err);
     });
     return csvText;
-  } catch (fetchErr) {
-    console.warn('[Sheets API] Offline/Network error fetching Job Orders. Falling back to cache...', fetchErr.message);
+  }).catch(async (err) => {
+    console.warn('[Sheets API] Offline/Network error fetching Job Orders. Falling back to cache...', err.message);
     if (fs.existsSync(JOB_ORDERS_CACHE_PATH)) {
-      const csvText = fs.readFileSync(JOB_ORDERS_CACHE_PATH, 'utf8');
-      cachedJobOrdersCsvText = csvText;
-      jobOrdersCacheTimestamp = now;
-      return csvText;
+      return fs.readFileSync(JOB_ORDERS_CACHE_PATH, 'utf8');
     } else {
       console.log('[Sheets API] No disk cache found for Job Orders. Seeding mock data.');
       const seedData = getDefaultJobOrdersCsv();
@@ -461,11 +436,9 @@ const getJobOrdersCsvText = async () => {
       } catch (writeErr) {
         console.error('[Sheets API] Failed to seed mock Job Orders CSV:', writeErr);
       }
-      cachedJobOrdersCsvText = seedData;
-      jobOrdersCacheTimestamp = now;
       return seedData;
     }
-  }
+  });
 };
 
 const parseSheetDate = (dateStr) => {
@@ -643,72 +616,89 @@ export const fetchSheetDataByLot = async (req, res) => {
 
 export const fetchJobOrders = async (req, res) => {
   try {
-    // 1. Sync from Google Sheets first
-    try {
-      console.log('[Job Orders Sync] Fetching CSV from Google Sheets...');
-      const csvText = await getJobOrdersCsvText();
-      const rows = parseCsvTextIntoRows(csvText);
+    // 1. Trigger background sync asynchronously (non-blocking)
+    const now = Date.now();
+    const lastSync = cache.get('job_orders_last_sync_time') || 0;
+    const SYNC_INTERVAL_MS = 5 * 60 * 1000; // sync every 5 minutes
 
-      if (rows && rows.length > 1) {
-        const headers = rows[0];
+    if (now - lastSync > SYNC_INTERVAL_MS && !cache.get('job_orders_syncing_db')) {
+      cache.set('job_orders_syncing_db', true, 60000); // 1 min lock
+      
+      setImmediate(async () => {
+        try {
+          console.log('[Background Job Orders Sync] Starting background sync from Google Sheets...');
+          const csvText = await getJobOrdersCsvText();
+          const rows = parseCsvTextIntoRows(csvText);
 
-        // Find column indices based on header names
-        const getColIdx = (name) => headers.indexOf(name);
+          if (rows && rows.length > 1) {
+            const headers = rows[0];
+            const getColIdx = (name) => headers.indexOf(name);
 
-        const jobOrderNoIdx = getColIdx('Job Order No');
-        const lotNumberIdx = getColIdx('Lot Number');
-        const fabricIdx = getColIdx('Fabric');
-        const brandIdx = getColIdx('Brand');
-        const quantityIdx = getColIdx('Quantity');
-        const unitIdx = getColIdx('Unit');
-        const shadeIdx = getColIdx('Shade');
-        const dateIdx = getColIdx('Date');
-        const sizeIdx = getColIdx('Size');
-        const garmentTypeIdx = getColIdx('Garment Type');
-        const sectionIdx = getColIdx('Section');
-        const seasonIdx = getColIdx('Season');
-        const patternIdx = getColIdx('Pattern');
-        const styleIdx = getColIdx('Style');
+            const jobOrderNoIdx = getColIdx('Job Order No');
+            const lotNumberIdx = getColIdx('Lot Number');
+            const fabricIdx = getColIdx('Fabric');
+            const brandIdx = getColIdx('Brand');
+            const quantityIdx = getColIdx('Quantity');
+            const unitIdx = getColIdx('Unit');
+            const shadeIdx = getColIdx('Shade');
+            const dateIdx = getColIdx('Date');
+            const sizeIdx = getColIdx('Size');
+            const garmentTypeIdx = getColIdx('Garment Type');
+            const sectionIdx = getColIdx('Section');
+            const seasonIdx = getColIdx('Season');
+            const patternIdx = getColIdx('Pattern');
+            const styleIdx = getColIdx('Style');
 
-        const upsertPromises = [];
+            const jobOrdersList = [];
 
-        // Skip header row
-        for (let i = 1; i < rows.length; i++) {
-          const row = rows[i];
-          if (row.length < 2) continue;
+            for (let i = 1; i < rows.length; i++) {
+              const row = rows[i];
+              if (row.length < 2) continue;
 
-          const lotNumber = lotNumberIdx !== -1 ? String(row[lotNumberIdx]).trim() : '';
-          if (!lotNumber) continue;
+              const lotNumber = lotNumberIdx !== -1 ? String(row[lotNumberIdx]).trim() : '';
+              if (!lotNumber) continue;
 
-          const jobOrderData = {
-            jobOrderNo: jobOrderNoIdx !== -1 ? String(row[jobOrderNoIdx]).trim() : '',
-            lotNumber: lotNumber,
-            fabric: fabricIdx !== -1 ? String(row[fabricIdx]).trim() : '',
-            brand: brandIdx !== -1 ? String(row[brandIdx]).trim() : '',
-            quantity: quantityIdx !== -1 ? parseInt(row[quantityIdx], 10) || 0 : 0,
-            unit: unitIdx !== -1 ? String(row[unitIdx]).trim() : '',
-            shade: shadeIdx !== -1 ? String(row[shadeIdx]).trim() : '',
-            date: dateIdx !== -1 ? String(row[dateIdx]).trim() : '',
-            size: sizeIdx !== -1 ? String(row[sizeIdx]).trim() : '',
-            garmentType: garmentTypeIdx !== -1 ? String(row[garmentTypeIdx]).trim() : '',
-            section: sectionIdx !== -1 ? String(row[sectionIdx]).trim() : '',
-            season: seasonIdx !== -1 ? String(row[seasonIdx]).trim() : '',
-            pattern: patternIdx !== -1 ? String(row[patternIdx]).trim() : '',
-            style: styleIdx !== -1 ? String(row[styleIdx]).trim() : ''
-          };
+              jobOrdersList.push({
+                jobOrderNo: jobOrderNoIdx !== -1 ? String(row[jobOrderNoIdx]).trim() : '',
+                lotNumber: lotNumber,
+                fabric: fabricIdx !== -1 ? String(row[fabricIdx]).trim() : '',
+                brand: brandIdx !== -1 ? String(row[brandIdx]).trim() : '',
+                quantity: quantityIdx !== -1 ? parseInt(row[quantityIdx], 10) || 0 : 0,
+                unit: unitIdx !== -1 ? String(row[unitIdx]).trim() : '',
+                shade: shadeIdx !== -1 ? String(row[shadeIdx]).trim() : '',
+                date: dateIdx !== -1 ? String(row[dateIdx]).trim() : '',
+                size: sizeIdx !== -1 ? String(row[sizeIdx]).trim() : '',
+                garmentType: garmentTypeIdx !== -1 ? String(row[garmentTypeIdx]).trim() : '',
+                section: sectionIdx !== -1 ? String(row[sectionIdx]).trim() : '',
+                season: seasonIdx !== -1 ? String(row[seasonIdx]).trim() : '',
+                pattern: patternIdx !== -1 ? String(row[patternIdx]).trim() : '',
+                style: styleIdx !== -1 ? String(row[styleIdx]).trim() : ''
+              });
+            }
 
-          upsertPromises.push(JobOrder.upsert(jobOrderData));
+            if (jobOrdersList.length > 0) {
+              const fieldsToUpdate = [
+                'jobOrderNo', 'fabric', 'brand', 'quantity', 'unit',
+                'shade', 'date', 'size', 'garmentType', 'section',
+                'season', 'pattern', 'style'
+              ];
+              // Perform a fast bulkCreate database upsert
+              await JobOrder.bulkCreate(jobOrdersList, {
+                updateOnDuplicate: fieldsToUpdate
+              });
+              console.log(`[Background Job Orders Sync] Successfully upserted ${jobOrdersList.length} job orders via bulkCreate.`);
+            }
+          }
+          cache.set('job_orders_last_sync_time', Date.now());
+        } catch (syncError) {
+          console.error('[Background Job Orders Sync] Error during background synchronization:', syncError);
+        } finally {
+          cache.delete('job_orders_syncing_db');
         }
-
-        // Run all upserts
-        await Promise.all(upsertPromises);
-        console.log(`[Job Orders Sync] Successfully synchronized ${upsertPromises.length} job orders from Google Sheets.`);
-      }
-    } catch (syncError) {
-      console.warn('[Job Orders Sync] Warning: Failed to sync from Google Sheets, serving from DB fallback:', syncError.message);
+      });
     }
 
-    // 2. Fetch all from database
+    // 2. Fetch all from database immediately and return to client
     const dbJobs = await JobOrder.findAll({
       order: [['id', 'DESC']]
     });

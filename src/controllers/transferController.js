@@ -1,5 +1,6 @@
 import { Transfer, Material, sequelize } from '../models/index.js';
 import { addAuditLog, checkShelfCapacity, getNextBarcodeId } from './materialController.js';
+import { cache } from '../utils/cache.js';
 
 export const getTransfers = async (req, res) => {
   try {
@@ -52,6 +53,7 @@ export const addTransfer = async (req, res) => {
       await addAuditLog('Material Transfer Requested', `${transferNo}: ${rollsVal} Roll(s) requested for transfer ${fromLocation}→${toLocation}`, req.user?.name || 'User', 'transfer');
 
       await transaction.commit();
+      cache.delete('settings_data');
       return res.json(trf);
     }
 
@@ -117,6 +119,7 @@ export const addTransfer = async (req, res) => {
     await addAuditLog('Material Transfer', `${transferNo}: ${rollsVal} Roll(s) moved ${fromLocation}→${toLocation}`, req.user?.name || 'Admin User', 'transfer');
 
     await transaction.commit();
+    cache.delete('settings_data');
     res.json(trf);
   } catch (error) {
     await transaction.rollback();
@@ -215,6 +218,7 @@ export const approveTransfer = async (req, res) => {
     await addAuditLog('Material Transfer Approved', `${trf.transferNo}: Approved move of ${rollsVal} Roll(s) to ${trf.toLocation}`, req.user?.name || 'Admin User', 'transfer');
 
     await transaction.commit();
+    cache.delete('settings_data');
     res.json({ success: true, transfer: trf });
   } catch (error) {
     await transaction.rollback();
@@ -242,6 +246,7 @@ export const rejectTransfer = async (req, res) => {
 
     await addAuditLog('Material Transfer Rejected', `${trf.transferNo}: Rejected transfer of ${trf.rolls} Roll(s) to ${trf.toLocation}`, req.user?.name || 'Admin User', 'transfer');
 
+    cache.delete('settings_data');
     res.json({ success: true, transfer: trf });
   } catch (error) {
     await transaction.rollback();
